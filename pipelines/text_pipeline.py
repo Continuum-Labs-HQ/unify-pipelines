@@ -1,13 +1,3 @@
-"""
-title: Simple Text Pipeline
-author: Claude
-date: 2024-11-09
-version: 1.0
-license: MIT
-description: A basic pipeline that processes text with configurable transformations
-requirements: pydantic
-"""
-
 from typing import List, Union, Generator, Iterator
 from pydantic import BaseModel
 
