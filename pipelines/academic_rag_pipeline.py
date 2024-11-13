@@ -1,4 +1,22 @@
-from typing import List, Union, Generator, Iterator, Optional, Dict
+"""
+title: Academic RAG Pipeline
+author: Continuum Labs
+version: 1.0
+description: RAG pipeline for academic paper search and analysis
+requirements: pymilvus,requests,pydantic
+"""
+
+from __future__ import annotations
+from typing import (
+    List, 
+    Union, 
+    Generator, 
+    Iterator, 
+    Optional, 
+    Dict,
+    Tuple,
+    Any
+)
 from pydantic import BaseModel
 import os
 import time
@@ -30,7 +48,7 @@ class Pipeline:
         
         # Search Configuration
         TOP_K: int = 5
-        SCORE_THRESHOLD: float = 2
+        SCORE_THRESHOLD: float = 2.0  # Added type clarity with .0
         
         # System Prompt
         SYSTEM_PROMPT: str = """You are a highly knowledgeable research analyst with expertise in scientific papers. 
@@ -47,7 +65,10 @@ class Pipeline:
 
         Keep responses clear and focused on the most relevant information."""
 
-    def __init__(self):
+        class Config:
+            arbitrary_types_allowed = True
+
+    def __init__(self) -> None:
         """Initialize the Pipeline with necessary connections and configurations."""
         try:
             self.valves = self.Valves()
@@ -95,7 +116,6 @@ class Pipeline:
             self._collection.load()
             logger.info(f"Connected to Milvus and loaded collection '{collection_name}'")
             
-            # Verify collection is loaded
             if not self._collection.is_empty:
                 entity_count = self._collection.num_entities
                 logger.info(f"Collection loaded with {entity_count} entities")
@@ -140,8 +160,8 @@ class Pipeline:
         except Exception as e:
             logger.error(f"Unexpected error in embedding generation: {str(e)}")
             return None
-        
-    def search_documents(self, embedding: List[float]) -> List[dict]:
+
+    def search_documents(self, embedding: List[float]) -> List[Dict[str, Any]]:
         """Search Milvus for similar documents based on embedding."""
         try:
             logger.info(f"Searching collection with {len(embedding)}-dimensional vector")
@@ -166,13 +186,12 @@ class Pipeline:
             )
             
             logger.info(f"Search returned {len(results)} result sets")
-            documents = []
+            documents: List[Dict[str, Any]] = []
             
             for hits in results:
                 for hit in hits:
                     score = float(hit.distance)
                     if score <= self.valves.SCORE_THRESHOLD:
-                        # Extract year from filename
                         source_file = getattr(hit.entity, "source_file", "Unknown")
                         year = source_file.split('-')[0] if source_file.startswith('20') else 'Unknown'
                         
@@ -199,26 +218,24 @@ class Pipeline:
             logger.error(f"Search error: {str(e)}")
             raise
 
-    def format_context(self, documents: List[dict]) -> tuple[str, List[dict]]:
+    def format_context(self, documents: List[Dict[str, Any]]) -> Tuple[str, List[Dict[str, Any]]]:
         """Format documents optimally for LLM and user."""
-        llm_context = []
-        user_metadata = []
+        llm_context: List[str] = []
+        user_metadata: List[Dict[str, Any]] = []
         
         for i, doc in enumerate(documents, 1):
-            # Format document context with focused content
             llm_section = (
                 f"Document {i} ({doc['year']}): {doc['source_file']}\n\n"
-                f"Abstract:\n{doc['abstract'][:500]}...\n\n"  # Limit abstract length
+                f"Abstract:\n{doc['abstract'][:500]}...\n\n"
                 f"Key Points:\n{self.format_bullet_points(doc['key_points'])}\n\n"
                 f"Technical Terms:\n{self.format_bullet_points(doc['technical_terms'])}\n\n"
-                f"Most Relevant Content:\n{doc['text'][:1000]}...\n\n"  # Limit text length
+                f"Most Relevant Content:\n{doc['text'][:1000]}...\n\n"
                 f"Relationships:\n{self.format_bullet_points(doc['relationships'])}\n\n"
                 f"Relevance Score: {doc['score']:.4f}\n"
                 f"---\n"
             )
             llm_context.append(llm_section)
             
-            # Enhanced metadata for user interface
             user_metadata.append({
                 "source": f"{doc['source_file']} ({doc['year']})",
                 "summary": doc['summary'][:200] + "..." if doc['summary'] else "No summary available",
@@ -237,23 +254,20 @@ class Pipeline:
         points = [point.strip() for point in text.split(separator) if point.strip()]
         return '\n'.join(f"• {point}" for point in points)
 
-    def pipe(self, user_message: str, model_id: str, messages: List[dict], body: dict) -> Union[str, Generator, Iterator]:
+    def pipe(self, user_message: str, model_id: str, messages: List[Dict[str, Any]], body: Dict[str, Any]) -> Union[str, Dict[str, Any]]:
         """Main pipeline method for processing a query."""
         try:
             logger.info(f"Processing query: {user_message}")
             start_time = time.time()
 
-            # Generate embedding
             embedding = self.get_embedding(user_message)
             if not embedding:
                 return "Failed to generate embedding for your question."
             
-            # Search for relevant documents
             documents = self.search_documents(embedding)
             if not documents:
                 return "No relevant academic papers found for your question."
             
-            # Format context and prepare messages
             context, metadata = self.format_context(documents)
             messages = [
                 {"role": "system", "content": self.valves.SYSTEM_PROMPT},
@@ -265,7 +279,6 @@ class Pipeline:
                 )}
             ]
             
-            # Prepare response body
             processing_time = time.time() - start_time
             body["messages"] = messages
             body["metadata"] = {
@@ -283,7 +296,7 @@ class Pipeline:
             logger.error(f"Pipeline error: {str(e)}")
             return f"An error occurred while processing your request: {str(e)}"
 
-    async def cleanup(self):
+    async def cleanup(self) -> None:
         """Cleanup resources when shutting down."""
         try:
             if hasattr(self, '_collection'):
