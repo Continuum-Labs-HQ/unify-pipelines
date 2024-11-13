@@ -1,6 +1,6 @@
 from typing import List, Union, Generator, Iterator
 import subprocess
-import os
+import sys
 
 
 class Pipeline:
@@ -23,9 +23,9 @@ class Pipeline:
 from art import text2art
 print(text2art("{text}", font="{font}"))
 """
-            # Run the code in a subprocess
+            # Use the current Python executable to run the subprocess
             result = subprocess.run(
-                ["python", "-c", code], capture_output=True, text=True, check=True
+                [sys.executable, "-c", code], capture_output=True, text=True, check=True
             )
             return result.stdout.strip()
         except subprocess.CalledProcessError as e:
