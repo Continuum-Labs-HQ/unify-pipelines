@@ -8,7 +8,7 @@ description: RAG pipeline for academic paper search using Milvus
 requirements: pymilvus, requests, pydantic
 """
 
-from typing import List, Union, Generator, Iterator, Dict, Any
+from typing import List, Union, Generator, Iterator, Dict, Any, Optional
 from pydantic import BaseModel
 import requests
 from pymilvus import connections, Collection, utility
@@ -16,7 +16,6 @@ import logging
 
 class Pipeline:
     class Valves(BaseModel):
-        # Required base configuration
         pipelines: List[str] = ["*"]
         priority: int = 0
 
@@ -31,28 +30,19 @@ class Pipeline:
         EMBEDDING_ENDPOINT: str = "http://192.168.13.50:30000/v1/embeddings"
         EMBEDDING_MODEL: str = "nvidia/nv-embedqa-mistral-7b-v2"
         
-        # Search Configuration
         TOP_K: int = 5
         SCORE_THRESHOLD: float = 2.0
 
     def __init__(self):
         self.name = "Academic RAG Pipeline"
-        self.type = "processor"
+        self.type = "filter"  # Changed to filter type
         self.valves = self.Valves()
         self._collection = None
         self._connected = False
-        print(f"Initialized {self.name}")
 
-    async def on_startup(self):
-        """Startup logic with connection establishment"""
-        try:
-            # Clear any existing connections first
-            try:
-                connections.disconnect_all()
-            except:
-                pass
-
-            # Create new connection
+    def _connect_milvus(self):
+        """Helper method to establish Milvus connection"""
+        if not self._connected:
             connections.connect(
                 alias="default",
                 host=self.valves.MILVUS_HOST,
@@ -60,51 +50,36 @@ class Pipeline:
                 user=self.valves.MILVUS_USER,
                 password=self.valves.MILVUS_PASSWORD
             )
-            
             self._collection = Collection(self.valves.MILVUS_COLLECTION)
             self._collection.load()
             self._connected = True
+            print("Connected to Milvus")
+
+    async def on_startup(self):
+        """Startup initialization"""
+        try:
+            self._connect_milvus()
             print(f"Started {self.name}")
-            
         except Exception as e:
-            self._connected = False
             print(f"Startup error: {str(e)}")
-            raise
+            self._connected = False
 
     async def on_shutdown(self):
-        """Cleanup logic with safe disconnection"""
-        try:
-            if self._connected:
-                if self._collection:
-                    try:
-                        self._collection.release()
-                    except Exception as e:
-                        print(f"Collection release error: {str(e)}")
-                
-                try:
-                    connections.disconnect_all()
-                except Exception as e:
-                    print(f"Disconnect error: {str(e)}")
-                
+        """Cleanup resources"""
+        if self._connected:
+            try:
+                self._collection.release()
+                connections.disconnect("default")
                 self._connected = False
                 print(f"Shut down {self.name}")
-        except Exception as e:
-            print(f"Shutdown error: {str(e)}")
+            except Exception as e:
+                print(f"Shutdown error: {str(e)}")
 
-    def pipe(
-        self, 
-        user_message: str, 
-        model_id: str, 
-        messages: List[dict], 
-        body: dict
-    ) -> Union[str, Generator, Iterator]:
-        """Processing logic with connection check"""
+    def process_message(self, user_message: str) -> Dict:
+        """Core processing logic"""
         try:
-            if body.get("title", False):
-                return self.name
-
             if not self._connected:
-                return "Pipeline is not connected. Please try again."
+                self._connect_milvus()
 
             # Get embeddings
             response = requests.post(
@@ -140,9 +115,8 @@ class Pipeline:
                         documents.append(doc)
 
             if not documents:
-                return "No relevant documents found."
+                return {"error": "No relevant documents found."}
 
-            # Format context
             context = "\n\n".join([
                 f"Document {i+1}:\n"
                 f"Source: {doc['source_file']}\n"
@@ -153,15 +127,54 @@ class Pipeline:
                 for i, doc in enumerate(documents)
             ])
 
-            messages = [
-                {"role": "system", "content": "You are a research assistant."},
-                {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {user_message}"}
-            ]
-            
-            body["messages"] = messages
-            return body
-            
+            return {"context": context}
+
         except Exception as e:
-            self._connected = False
             print(f"Processing error: {str(e)}")
-            return f"An error occurred: {str(e)}"
+            return {"error": str(e)}
+
+    async def inlet(self, body: dict, user: Optional[dict] = None) -> dict:
+        """Pre-processing filter"""
+        try:
+            if not isinstance(body, dict):
+                return body
+
+            if "messages" not in body:
+                return body
+
+            last_message = body["messages"][-1]["content"]
+            result = self.process_message(last_message)
+
+            if "error" in result:
+                return body
+
+            context = result["context"]
+            
+            # Add context to the system message
+            system_message = {
+                "role": "system",
+                "content": "You are a research assistant. Use the following academic context to answer the question:\n\n" + context
+            }
+            
+            body["messages"].insert(0, system_message)
+            return body
+
+        except Exception as e:
+            print(f"Inlet error: {str(e)}")
+            return body
+
+    async def outlet(self, response: str, user: Optional[dict] = None) -> str:
+        """Post-processing filter"""
+        return response
+
+    def pipe(
+        self,
+        user_message: str,
+        model_id: str,
+        messages: List[dict],
+        body: dict
+    ) -> Union[str, Generator, Iterator]:
+        """Main pipe method"""
+        if body.get("title", False):
+            return self.name
+        return f"An error occurred: Pipeline should be used as a filter"
