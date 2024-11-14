@@ -5,14 +5,18 @@ date: 2024-11-14
 version: 1.0
 license: MIT
 description: Filter for academic paper search and context injection
-requirements: pymilvus, requests, pydantic
+requirements: pymilvus, requests, pydantic, cachetools
 """
 
+import os
+import time
 from typing import List, Union, Generator, Iterator, Dict, Any, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import requests
 from pymilvus import connections, Collection, utility
 import logging
+from cachetools import TTLCache
+from datetime import datetime
 
 class Pipeline:
     """Filter pipeline for academic paper search and context injection"""
@@ -20,23 +24,48 @@ class Pipeline:
     class Valves(BaseModel):
         """Configuration parameters for the filter"""
         # Required filter configuration
-        pipelines: List[str] = ["*"]
-        priority: int = 0
+        pipelines: List[str] = Field(default=["*"], description="Target pipelines")
+        priority: int = Field(default=0, description="Filter priority")
         
         # Milvus configuration
-        milvus_host: str = "10.106.175.99"
-        milvus_port: str = "19530"
-        milvus_user: str = "thannon"
-        milvus_password: str = "chaeBio7!!!"
-        milvus_collection: str = "arxiv_documents"
+        milvus_host: str = Field(
+            default=os.getenv("MILVUS_HOST", "10.106.175.99"),
+            description="Milvus server host"
+        )
+        milvus_port: str = Field(
+            default=os.getenv("MILVUS_PORT", "19530"),
+            description="Milvus server port"
+        )
+        milvus_user: str = Field(
+            default=os.getenv("MILVUS_USER", "thannon"),
+            description="Milvus username"
+        )
+        milvus_password: str = Field(
+            default=os.getenv("MILVUS_PASSWORD", "chaeBio7!!!"),
+            description="Milvus password"
+        )
+        milvus_collection: str = Field(
+            default=os.getenv("MILVUS_COLLECTION", "arxiv_documents"),
+            description="Milvus collection name"
+        )
         
         # Embedding configuration
-        embedding_endpoint: str = "http://192.168.13.50:30000/v1/embeddings"
-        embedding_model: str = "nvidia/nv-embedqa-mistral-7b-v2"
+        embedding_endpoint: str = Field(
+            default=os.getenv("EMBEDDING_ENDPOINT", "http://192.168.13.50:30000/v1/embeddings"),
+            description="Embedding service endpoint"
+        )
+        embedding_model: str = Field(
+            default=os.getenv("EMBEDDING_MODEL", "nvidia/nv-embedqa-mistral-7b-v2"),
+            description="Embedding model name"
+        )
         
         # Search configuration
-        top_k: int = 5
-        score_threshold: float = 2.0
+        top_k: int = Field(default=5, ge=1, le=20, description="Number of results to return")
+        score_threshold: float = Field(default=2.0, description="Maximum distance threshold")
+        
+        # Rate limiting
+        requests_per_minute: int = Field(default=60, description="Maximum requests per minute")
+        cache_ttl: int = Field(default=3600, description="Cache TTL in seconds")
 
         class Config:
             """Pydantic configuration"""
@@ -51,7 +80,26 @@ class Pipeline:
         self.name = "Academic RAG Filter"
         self.valves = self.Valves()
         self._collection = None
-        logging.info(f"Initialized {self.name}")
+        self._request_times = []
+        self._cache = TTLCache(maxsize=1000, ttl=self.valves.cache_ttl)
+        
+        # Configure logging
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        self.logger = logging.getLogger(self.name)
+        self.logger.info(f"Initialized {self.name}")
+
+    def _check_rate_limit(self) -> bool:
+        """Check if within rate limit"""
+        now = time.time()
+        minute_ago = now - 60
+        self._request_times = [t for t in self._request_times if t > minute_ago]
+        if len(self._request_times) >= self.valves.requests_per_minute:
+            return False
+        self._request_times.append(now)
+        return True
 
     async def on_startup(self):
         """Server startup hook"""
@@ -66,9 +114,10 @@ class Pipeline:
             )
             self._collection = Collection(self.valves.milvus_collection)
             self._collection.load()
-            logging.info(f"Started {self.name}")
+            self.logger.info(f"Started {self.name}")
         except Exception as e:
-            logging.error(f"Startup error: {str(e)}")
+            self.logger.error(f"Startup error: {str(e)}", exc_info=True)
+            raise
 
     async def on_shutdown(self):
         """Server shutdown hook"""
@@ -76,12 +125,23 @@ class Pipeline:
             if self._collection:
                 self._collection.release()
             connections.disconnect("default")
-            logging.info(f"Shut down {self.name}")
+            self.logger.info(f"Shut down {self.name}")
         except Exception as e:
-            logging.error(f"Shutdown error: {str(e)}")
+            self.logger.error(f"Shutdown error: {str(e)}", exc_info=True)
 
     def search_papers(self, query: str) -> Dict[str, Any]:
         """Search for relevant papers using the query"""
+        # Check cache first
+        cache_key = f"search:{query}"
+        if cache_key in self._cache:
+            self.logger.info("Returning cached results")
+            return self._cache[cache_key]
+
+        # Check rate limit
+        if not self._check_rate_limit():
+            self.logger.warning("Rate limit exceeded")
+            return {"success": False, "error": "Rate limit exceeded"}
+
         try:
             # Get embedding
             response = requests.post(
@@ -91,8 +151,10 @@ class Pipeline:
                     "input": [query],
                     "model": self.valves.embedding_model,
                     "input_type": "query",
-                }
+                },
+                timeout=10
             )
+            response.raise_for_status()
             embedding = response.json()["data"][0]["embedding"]
 
             # Search Milvus
@@ -113,13 +175,19 @@ class Pipeline:
                             "source": getattr(hit.entity, "source_file", "Unknown"),
                             "abstract": getattr(hit.entity, "abstract", "No abstract"),
                             "key_points": getattr(hit.entity, "key_points", "No key points"),
-                            "score": float(hit.distance)
+                            "score": float(hit.distance),
+                            "timestamp": datetime.now().isoformat()
                         })
 
-            return {"success": True, "papers": papers}
+            result = {"success": True, "papers": papers}
+            self._cache[cache_key] = result
+            return result
 
+        except requests.exceptions.RequestException as e:
+            self.logger.error(f"API request error: {str(e)}", exc_info=True)
+            return {"success": False, "error": "Embedding service unavailable"}
         except Exception as e:
-            logging.error(f"Search error: {str(e)}")
+            self.logger.error(f"Search error: {str(e)}", exc_info=True)
             return {"success": False, "error": str(e)}
 
     async def inlet(self, body: Dict, user: Optional[Dict] = None) -> Dict:
@@ -136,7 +204,7 @@ class Pipeline:
             result = self.search_papers(last_message)
             
             if not result["success"]:
-                logging.error(f"Search failed: {result.get('error')}")
+                self.logger.error(f"Search failed: {result.get('error')}")
                 return body
 
             papers = result["papers"]
@@ -150,6 +218,7 @@ class Pipeline:
                 f"Abstract: {paper['abstract']}\n"
                 f"Key Points: {paper['key_points']}\n"
                 f"Relevance: {paper['score']:.2f}\n"
+                f"Retrieved: {paper['timestamp']}\n"
                 "---"
                 for i, paper in enumerate(papers)
             ])
@@ -167,7 +236,7 @@ class Pipeline:
             return body
 
         except Exception as e:
-            logging.error(f"Inlet error: {str(e)}")
+            self.logger.error(f"Inlet error: {str(e)}", exc_info=True)
             return body
 
     async def outlet(self, response: str, user: Optional[Dict] = None) -> str:
