@@ -17,8 +17,8 @@ import logging
 class Pipeline:
     class Valves(BaseModel):
         # Required base configuration
-        pipelines: List[str] = ["*"]  # Which pipelines to connect to
-        priority: int = 0             # Processing priority
+        pipelines: List[str] = ["*"]
+        priority: int = 0
 
         # Milvus Configuration
         MILVUS_HOST: str = "10.106.175.99"
@@ -34,24 +34,25 @@ class Pipeline:
         # Search Configuration
         TOP_K: int = 5
         SCORE_THRESHOLD: float = 2.0
-        
-        class Config:
-            json_schema_extra = {
-                "title": "Academic RAG Configuration",
-                "description": "Configuration for ARXIV document search"
-            }
 
     def __init__(self):
         self.name = "Academic RAG Pipeline"
-        self.type = "processor"  # Added pipeline type
+        self.type = "processor"
         self.valves = self.Valves()
         self._collection = None
+        self._connected = False
         print(f"Initialized {self.name}")
 
     async def on_startup(self):
-        """Initialization logic"""
+        """Startup logic with connection establishment"""
         try:
-            # Create connection
+            # Clear any existing connections first
+            try:
+                connections.disconnect_all()
+            except:
+                pass
+
+            # Create new connection
             connections.connect(
                 alias="default",
                 host=self.valves.MILVUS_HOST,
@@ -60,22 +61,33 @@ class Pipeline:
                 password=self.valves.MILVUS_PASSWORD
             )
             
-            # Initialize collection
             self._collection = Collection(self.valves.MILVUS_COLLECTION)
             self._collection.load()
+            self._connected = True
             print(f"Started {self.name}")
             
         except Exception as e:
+            self._connected = False
             print(f"Startup error: {str(e)}")
             raise
 
     async def on_shutdown(self):
-        """Cleanup logic"""
+        """Cleanup logic with safe disconnection"""
         try:
-            if self._collection:
-                self._collection.release()
-            connections.disconnect("default")
-            print(f"Shut down {self.name}")
+            if self._connected:
+                if self._collection:
+                    try:
+                        self._collection.release()
+                    except Exception as e:
+                        print(f"Collection release error: {str(e)}")
+                
+                try:
+                    connections.disconnect_all()
+                except Exception as e:
+                    print(f"Disconnect error: {str(e)}")
+                
+                self._connected = False
+                print(f"Shut down {self.name}")
         except Exception as e:
             print(f"Shutdown error: {str(e)}")
 
@@ -86,11 +98,13 @@ class Pipeline:
         messages: List[dict], 
         body: dict
     ) -> Union[str, Generator, Iterator]:
-        """Core processing logic"""
+        """Processing logic with connection check"""
         try:
-            # Handle title request
             if body.get("title", False):
                 return self.name
+
+            if not self._connected:
+                return "Pipeline is not connected. Please try again."
 
             # Get embeddings
             response = requests.post(
@@ -113,7 +127,6 @@ class Pipeline:
                 output_fields=["source_file", "abstract", "key_points"]
             )
 
-            # Process results
             documents = []
             for hits in results:
                 for hit in hits:
@@ -140,7 +153,6 @@ class Pipeline:
                 for i, doc in enumerate(documents)
             ])
 
-            # Update messages
             messages = [
                 {"role": "system", "content": "You are a research assistant."},
                 {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {user_message}"}
@@ -150,5 +162,6 @@ class Pipeline:
             return body
             
         except Exception as e:
+            self._connected = False
             print(f"Processing error: {str(e)}")
             return f"An error occurred: {str(e)}"
