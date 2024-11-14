@@ -3,7 +3,8 @@ title: Academic RAG Pipeline
 author: Assistant
 date: 2024-11-14
 version: 1.0
-description: RAG pipeline aligned with Milvus schema for ARXIV documents
+license: MIT
+description: RAG pipeline for academic paper search using Milvus
 requirements: pymilvus, requests, pydantic
 """
 
@@ -15,6 +16,10 @@ import logging
 
 class Pipeline:
     class Valves(BaseModel):
+        # Required base configuration
+        pipelines: List[str] = ["*"]  # Which pipelines to connect to
+        priority: int = 0             # Processing priority
+
         # Milvus Configuration
         MILVUS_HOST: str = "10.106.175.99"
         MILVUS_PORT: str = "19530"
@@ -30,19 +35,6 @@ class Pipeline:
         TOP_K: int = 5
         SCORE_THRESHOLD: float = 2.0
         
-        # Schema-aligned output fields
-        OUTPUT_FIELDS: List[str] = [
-            "doc_id",
-            "source_file",
-            "text",
-            "summary",
-            "key_points",
-            "technical_terms",
-            "abstract",
-            "relationships",
-            "timestamp"
-        ]
-
         class Config:
             json_schema_extra = {
                 "title": "Academic RAG Configuration",
@@ -51,12 +43,15 @@ class Pipeline:
 
     def __init__(self):
         self.name = "Academic RAG Pipeline"
+        self.type = "processor"  # Added pipeline type
         self.valves = self.Valves()
         self._collection = None
+        print(f"Initialized {self.name}")
 
     async def on_startup(self):
-        """Initialize Milvus connection"""
+        """Initialization logic"""
         try:
+            # Create connection
             connections.connect(
                 alias="default",
                 host=self.valves.MILVUS_HOST,
@@ -64,83 +59,25 @@ class Pipeline:
                 user=self.valves.MILVUS_USER,
                 password=self.valves.MILVUS_PASSWORD
             )
+            
+            # Initialize collection
             self._collection = Collection(self.valves.MILVUS_COLLECTION)
-            print(f"Connected to collection: {self._collection.name}")
-            print(f"Number of entities: {self._collection.num_entities}")
             self._collection.load()
+            print(f"Started {self.name}")
             
         except Exception as e:
             print(f"Startup error: {str(e)}")
             raise
 
     async def on_shutdown(self):
-        """Cleanup resources"""
-        if self._collection:
-            self._collection.release()
-        connections.disconnect("default")
-        print("Pipeline shut down")
-
-    def get_embedding(self, text: str) -> List[float]:
-        """Get embeddings from endpoint"""
+        """Cleanup logic"""
         try:
-            response = requests.post(
-                self.valves.EMBEDDING_ENDPOINT,
-                headers={"Content-Type": "application/json"},
-                json={
-                    "input": [text],
-                    "model": self.valves.EMBEDDING_MODEL,
-                    "input_type": "query",
-                }
-            )
-            response.raise_for_status()
-            embedding = response.json()["data"][0]["embedding"]
-            print(f"Generated embedding of size: {len(embedding)}")
-            return embedding
+            if self._collection:
+                self._collection.release()
+            connections.disconnect("default")
+            print(f"Shut down {self.name}")
         except Exception as e:
-            print(f"Embedding error: {str(e)}")
-            raise
-
-    def search_documents(self, embedding: List[float]) -> List[Dict[str, Any]]:
-        """Schema-aligned search implementation"""
-        try:
-            search_params = {
-                "metric_type": "L2",
-                "params": {
-                    "search_width": 128,
-                    "nprobe": 16
-                }
-            }
-            
-            results = self._collection.search(
-                data=[embedding],
-                anns_field="embedding",
-                param=search_params,
-                limit=self.valves.TOP_K,
-                output_fields=self.valves.OUTPUT_FIELDS
-            )
-
-            documents = []
-            for hits in results:
-                for hit in hits:
-                    if hit.distance <= self.valves.SCORE_THRESHOLD:
-                        doc = {}
-                        # Add the score
-                        doc["score"] = float(hit.distance)
-                        
-                        # Safely extract all fields from the entity
-                        for field in self.valves.OUTPUT_FIELDS:
-                            value = getattr(hit.entity, field, None)
-                            if value is not None:
-                                doc[field] = str(value)
-                        
-                        documents.append(doc)
-                        print(f"Found document: {doc['source_file']} with score: {doc['score']}")
-
-            return documents
-
-        except Exception as e:
-            print(f"Search error: {str(e)}")
-            raise
+            print(f"Shutdown error: {str(e)}")
 
     def pipe(
         self, 
@@ -149,44 +86,69 @@ class Pipeline:
         messages: List[dict], 
         body: dict
     ) -> Union[str, Generator, Iterator]:
-        """Main pipeline method"""
+        """Core processing logic"""
         try:
+            # Handle title request
             if body.get("title", False):
                 return self.name
 
-            print(f"Processing query: {user_message}")
+            # Get embeddings
+            response = requests.post(
+                self.valves.EMBEDDING_ENDPOINT,
+                headers={"Content-Type": "application/json"},
+                json={
+                    "input": [user_message],
+                    "model": self.valves.EMBEDDING_MODEL,
+                    "input_type": "query",
+                }
+            )
+            embedding = response.json()["data"][0]["embedding"]
 
-            # Get embeddings and search
-            embedding = self.get_embedding(user_message)
-            documents = self.search_documents(embedding)
-            
+            # Search documents
+            results = self._collection.search(
+                data=[embedding],
+                anns_field="embedding",
+                param={"metric_type": "L2", "params": {"nprobe": 16}},
+                limit=self.valves.TOP_K,
+                output_fields=["source_file", "abstract", "key_points"]
+            )
+
+            # Process results
+            documents = []
+            for hits in results:
+                for hit in hits:
+                    if hit.distance <= self.valves.SCORE_THRESHOLD:
+                        doc = {
+                            "source_file": getattr(hit.entity, "source_file", "Unknown"),
+                            "abstract": getattr(hit.entity, "abstract", "No abstract"),
+                            "key_points": getattr(hit.entity, "key_points", "No key points"),
+                            "score": float(hit.distance)
+                        }
+                        documents.append(doc)
+
             if not documents:
                 return "No relevant documents found."
 
-            # Format context with all available information
-            context_parts = []
-            for i, doc in enumerate(documents, 1):
-                context_parts.append(
-                    f"Document {i}:\n"
-                    f"Source: {doc.get('source_file', 'Unknown')}\n"
-                    f"Abstract: {doc.get('abstract', 'No abstract available')}\n"
-                    f"Key Points: {doc.get('key_points', 'No key points available')}\n"
-                    f"Technical Terms: {doc.get('technical_terms', 'No terms available')}\n"
-                    f"Score: {doc.get('score', 0.0):.2f}\n"
-                    "---"
-                )
+            # Format context
+            context = "\n\n".join([
+                f"Document {i+1}:\n"
+                f"Source: {doc['source_file']}\n"
+                f"Abstract: {doc['abstract']}\n"
+                f"Key Points: {doc['key_points']}\n"
+                f"Score: {doc['score']:.2f}\n"
+                "---"
+                for i, doc in enumerate(documents)
+            ])
 
-            context = "\n\n".join(context_parts)
-
-            # Update messages for LLM
+            # Update messages
             messages = [
-                {"role": "system", "content": "You are a research assistant with expertise in scientific papers."},
-                {"role": "user", "content": f"Based on these papers:\n\n{context}\n\nQuestion: {user_message}"}
+                {"role": "system", "content": "You are a research assistant."},
+                {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {user_message}"}
             ]
             
             body["messages"] = messages
             return body
             
         except Exception as e:
-            print(f"Pipeline error: {str(e)}")
+            print(f"Processing error: {str(e)}")
             return f"An error occurred: {str(e)}"
