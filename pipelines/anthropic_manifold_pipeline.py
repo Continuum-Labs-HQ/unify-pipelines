@@ -28,15 +28,15 @@ class Pipeline:
     def __init__(self):
         """Initialize the Anthropic pipeline."""
         self.type = "manifold"
-        self.id = "anthropic"
-        self.name = "anthropic/"
+        self.id = "aleph"  # Changed to match our naming scheme
+        self.name = "aleph"  # Changed to match our naming scheme
         
         # Define model mapping
         self.model_mapping = {
-            "continuum-aleph-4": "claude-3-haiku-20240307",
-            "continuum-aleph-3": "claude-3-opus-20240229",
-            "continuum-aleph-2": "claude-3-sonnet-20240229",
-            "continuum-aleph-1": "claude-3-5-sonnet-20241022"
+            "1": "claude-3-5-sonnet-20241022",
+            "2": "claude-3-sonnet-20240229",
+            "3": "claude-3-opus-20240229",
+            "4": "claude-3-haiku-20240307"
         }
         
         # Initialize valves with API key from environment
@@ -45,7 +45,7 @@ class Pipeline:
         )
         self.url = 'https://api.anthropic.com/v1/messages'
         self.update_headers()
-        logger.info("Anthropic pipeline initialized")
+        logger.info("Aleph pipeline initialized")
 
     def update_headers(self):
         """Update request headers with current API key."""
@@ -59,8 +59,8 @@ class Pipeline:
     def get_available_models(self):
         """Return list of available models with custom names."""
         return [
-            {"id": name, "name": name} 
-            for name in self.model_mapping.keys()
+            {"id": model_id, "name": f"Aleph {model_id}"} 
+            for model_id in self.model_mapping.keys()
         ]
 
     async def on_startup(self):
@@ -114,7 +114,7 @@ class Pipeline:
                 "stream": body.get("stream", False)
             }
 
-            logger.info(f"Processing request with model: {model_id} (Anthropic: {anthropic_model_id})")
+            logger.info(f"Processing request with model: Aleph {model_id} (Anthropic: {anthropic_model_id})")
             
             # Handle streaming vs non-streaming
             if body.get("stream", False):
