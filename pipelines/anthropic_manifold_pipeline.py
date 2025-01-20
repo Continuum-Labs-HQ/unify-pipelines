@@ -31,6 +31,14 @@ class Pipeline:
         self.id = "anthropic"
         self.name = "anthropic/"
         
+        # Define model mapping
+        self.model_mapping = {
+            "continuum-aleph-4": "claude-3-haiku-20240307",
+            "continuum-aleph-3": "claude-3-opus-20240229",
+            "continuum-aleph-2": "claude-3-sonnet-20240229",
+            "continuum-aleph-1": "claude-3-5-sonnet-20241022"
+        }
+        
         # Initialize valves with API key from environment
         self.valves = self.Valves(
             **{"ANTHROPIC_API_KEY": os.getenv("ANTHROPIC_API_KEY", "")}
@@ -49,12 +57,10 @@ class Pipeline:
         logger.debug("Headers updated")
 
     def get_available_models(self):
-        """Return list of available Anthropic models."""
+        """Return list of available models with custom names."""
         return [
-            {"id": "claude-3-haiku-20240307", "name": "continuum-aleph-4"},
-            {"id": "claude-3-opus-20240229", "name": "continuum-aleph-3"},
-            {"id": "claude-3-sonnet-20240229", "name": "continuum-aleph-2"},
-            {"id": "claude-3-5-sonnet-20241022", "name": "continuum-aleph-1"},
+            {"id": name, "name": name} 
+            for name in self.model_mapping.keys()
         ]
 
     async def on_startup(self):
@@ -81,6 +87,11 @@ class Pipeline:
     ) -> Union[str, Generator, Iterator]:
         """Process a message through the Anthropic API."""
         try:
+            # Map our custom model name to Anthropic model ID
+            anthropic_model_id = self.model_mapping.get(model_id)
+            if not anthropic_model_id:
+                raise ValueError(f"Unknown model: {model_id}")
+                
             # Clean up body
             for key in ['user', 'chat_id', 'title']:
                 body.pop(key, None)
@@ -94,16 +105,16 @@ class Pipeline:
                         "content": [{"type": "text", "text": message["content"]}]
                     })
 
-            # Prepare payload
+            # Prepare payload with the actual Anthropic model ID
             payload = {
-                "model": model_id,
+                "model": anthropic_model_id,  # Use mapped Anthropic model ID
                 "messages": processed_messages,
                 "max_tokens": body.get("max_tokens", 4096),
                 "temperature": body.get("temperature", 0.7),
                 "stream": body.get("stream", False)
             }
 
-            logger.info(f"Processing request with model: {model_id}")
+            logger.info(f"Processing request with model: {model_id} (Anthropic: {anthropic_model_id})")
             
             # Handle streaming vs non-streaming
             if body.get("stream", False):
