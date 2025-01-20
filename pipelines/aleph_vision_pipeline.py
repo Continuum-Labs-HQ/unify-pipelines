@@ -35,9 +35,9 @@ class Pipeline:
 
     def __init__(self):
         """Initialize the Aleph pipeline."""
-        self.type = "manifold"
-        self.id = "aleph"
-        self.name = "aleph"
+        self.type = "aleph_vision"  # Changed
+        self.id = "aleph_vision"    # Changed
+        self.name = "aleph"         # This stays the same
         
         # Define model mapping
         self.model_mapping = {
