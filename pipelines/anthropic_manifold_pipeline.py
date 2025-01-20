@@ -28,8 +28,8 @@ class Pipeline:
     def __init__(self):
         """Initialize the Anthropic pipeline."""
         self.type = "manifold"
-        self.id = "aleph "  # Changed to match our naming scheme
-        self.name = "continuum"  # Changed to match our naming scheme
+        self.id = "continuum "  # Changed to match our naming scheme
+        self.name = "aleph-"  # Changed to match our naming scheme
         
         # Define model mapping
         self.model_mapping = {
