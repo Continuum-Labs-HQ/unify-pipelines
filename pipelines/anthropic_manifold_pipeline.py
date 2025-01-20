@@ -51,10 +51,10 @@ class Pipeline:
     def get_available_models(self):
         """Return list of available Anthropic models."""
         return [
-            {"id": "claude-3-haiku-20240307", "name": "claude-3-haiku"},
-            {"id": "claude-3-opus-20240229", "name": "claude-3-opus"},
-            {"id": "claude-3-sonnet-20240229", "name": "claude-3-sonnet"},
-            {"id": "claude-3-5-sonnet-20241022", "name": "claude-3.5-sonnet"},
+            {"id": "claude-3-haiku-20240307", "name": "continuum-aleph-4"},
+            {"id": "claude-3-opus-20240229", "name": "continuum-aleph-3"},
+            {"id": "claude-3-sonnet-20240229", "name": "continuum-aleph-2"},
+            {"id": "claude-3-5-sonnet-20241022", "name": "continuum-aleph-1"},
         ]
 
     async def on_startup(self):
