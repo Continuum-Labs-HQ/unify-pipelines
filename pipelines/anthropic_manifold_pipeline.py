@@ -21,7 +21,7 @@ from utils.pipelines.main import pop_system_message
 
 class Pipeline:
     class Valves(BaseModel):
-        ANTHROPIC_API_KEY: str = "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"
+        ANTHROPIC_API_KEY: str = ""
 
     def __init__(self):
         self.type = "manifold"
