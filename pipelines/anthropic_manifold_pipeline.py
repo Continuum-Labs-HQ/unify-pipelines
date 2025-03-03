@@ -104,8 +104,8 @@ class Pipeline:
                         if item["type"] == "text":
                             processed_content.append({"type": "text", "text": item["text"]})
                         elif item["type"] == "image_url":
-                            if image_count >= 5:
-                                raise ValueError("Maximum of 5 images per API call exceeded")
+                            if image_count >= 20:
+                                raise ValueError("Maximum of 20 images per API call exceeded")
 
                             processed_image = self.process_image(item["image_url"])
                             processed_content.append(processed_image)
